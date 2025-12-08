@@ -220,25 +220,6 @@ class TrionesController:
         if not await self._ensure_connected():
             return False
             
-        # Windows-specific service discovery validation
-        if platform.system() == "Windows":
-            try:
-                # Ensure services are still available
-                services = await self._client.get_services()
-                if not any(self.SERVICE_UUID in str(service.uuid) for service in services):
-                    logger.warning("Service not found, attempting reconnection")
-                    await self._force_reconnect()
-                    if not await self._ensure_connected():
-                        return False
-                        
-                # Longer delay for longer commands (color/mode commands need more time)
-                delay = 0.1 if len(command) > 4 else 0.05
-                await asyncio.sleep(delay)
-                
-            except Exception as e:
-                logger.error(f"Service validation failed: {e}")
-                return False
-            
         try:
             await self._client.write_gatt_char(self.WRITE_CHARACTERISTIC, command)
             logger.debug(f"Sent command: {command.hex()}")
