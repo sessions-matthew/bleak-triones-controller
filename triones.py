@@ -9,6 +9,7 @@ License: MIT
 """
 
 import asyncio
+import platform
 from typing import List, Tuple, Optional, Dict, Any
 from bleak import BleakScanner, BleakClient
 from bleak.backends.device import BLEDevice
@@ -132,17 +133,37 @@ class TrionesController:
             self._client = BleakClient(self.device.address)
             await self._client.connect()
             
-            # Access services property to ensure GATT services are available
-            services = self._client.services
-            if services:
-                service_list = list(services)
-                logger.debug(f"Discovered {len(service_list)} services for {self.name}")
-                
-                # Verify our required service exists
-                if not any(str(service.uuid).lower() == self.SERVICE_UUID.lower() for service in services):
-                    logger.warning(f"Required service {self.SERVICE_UUID} not found")
-            else:
-                logger.warning(f"No services discovered for {self.name}")
+            # Force service discovery - especially important on Windows
+            # Wait a moment for connection to stabilize
+            await asyncio.sleep(0.5)
+            
+            # Access services to ensure discovery has happened
+            # On Windows, this might trigger service discovery if not already done
+            try:
+                services = self._client.services
+                if services:
+                    service_count = len([s for s in services])
+                    logger.debug(f"Services discovered: {service_count}")
+                    
+                    # Check if our required service exists
+                    service_found = any(
+                        str(service.uuid).lower() == self.SERVICE_UUID.lower() 
+                        for service in services
+                    )
+                    
+                    if not service_found:
+                        logger.warning(f"Required service {self.SERVICE_UUID} not found")
+                        # Try to find any services that might work
+                        for service in services:
+                            logger.debug(f"Available service: {service.uuid}")
+                else:
+                    logger.warning("No services discovered - this may cause write failures")
+                    
+            except Exception as service_error:
+                logger.warning(f"Service discovery issue: {service_error}")
+            
+            # Additional wait for Windows stability
+            await asyncio.sleep(0.2)
             
             self._connected = True
             logger.info(f"Connected to {self.name} ({self.address})")
@@ -157,6 +178,16 @@ class TrionesController:
                     pass
                 self._client = None
             return False
+    
+    async def _force_reconnect(self):
+        """Force disconnect and clear connection state for reconnection"""
+        self._connected = False
+        if self._client:
+            try:
+                await self._client.disconnect()
+            except:
+                pass
+            self._client = None
     
     async def disconnect(self):
         """Disconnect from the controller"""
@@ -189,25 +220,43 @@ class TrionesController:
         if not await self._ensure_connected():
             return False
             
+        # Windows-specific service discovery validation
+        if platform.system() == "Windows":
+            try:
+                # Ensure services are still available
+                services = await self._client.get_services()
+                if not any(self.SERVICE_UUID in str(service.uuid) for service in services):
+                    logger.warning("Service not found, attempting reconnection")
+                    await self._force_reconnect()
+                    if not await self._ensure_connected():
+                        return False
+                        
+                # Small delay for Windows BLE stack stability
+                await asyncio.sleep(0.05)
+                
+            except Exception as e:
+                logger.error(f"Service validation failed: {e}")
+                return False
+            
         try:
-            # Ensure we have the client and it's connected
-            if not self._client or not self._client.is_connected:
-                logger.error("Client not connected when trying to write command")
-                return False
-                
-            # Verify the characteristic exists before writing
-            services = self._client.services
-            if not services:
-                logger.error("No services available, service discovery may have failed")
-                return False
-                
             await self._client.write_gatt_char(self.WRITE_CHARACTERISTIC, command)
             logger.debug(f"Sent command: {command.hex()}")
             return True
         except Exception as e:
             logger.error(f"Failed to write command {command.hex()}: {e}")
-            # If write fails, mark as disconnected to force reconnection
-            self._connected = False
+            
+            # On Windows, try reconnecting once if write fails
+            if platform.system() == "Windows" and "not connected" in str(e).lower():
+                logger.info("Attempting reconnection after write failure")
+                await self._force_reconnect()
+                if await self._ensure_connected():
+                    try:
+                        await self._client.write_gatt_char(self.WRITE_CHARACTERISTIC, command)
+                        logger.debug(f"Sent command after reconnection: {command.hex()}")
+                        return True
+                    except Exception as retry_e:
+                        logger.error(f"Retry write failed: {retry_e}")
+            
             return False
     
     async def _get_status_response(self) -> Optional[bytes]:
