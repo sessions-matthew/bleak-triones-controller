@@ -433,8 +433,8 @@ class TrionesController:
         if isinstance(mode, TrionesMode):
             mode = mode.value
             
-        if not 0x25 <= mode <= 0x38:
-            raise ValueError(f"Mode must be 0x25-0x38 (37-56), got: {mode}")
+        if not (0x25 <= mode <= 0x38 or mode == 0x41):
+            raise ValueError(f"Mode must be 0x25-0x38 (built-in animations) or 0x41 (static color), got: {mode}")
         
         if not 1 <= speed <= 255:
             raise ValueError(f"Speed must be 1-255, got: {speed}")
