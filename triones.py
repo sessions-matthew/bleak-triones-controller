@@ -231,8 +231,9 @@ class TrionesController:
                     if not await self._ensure_connected():
                         return False
                         
-                # Small delay for Windows BLE stack stability
-                await asyncio.sleep(0.05)
+                # Longer delay for longer commands (color/mode commands need more time)
+                delay = 0.1 if len(command) > 4 else 0.05
+                await asyncio.sleep(delay)
                 
             except Exception as e:
                 logger.error(f"Service validation failed: {e}")
@@ -241,6 +242,11 @@ class TrionesController:
         try:
             await self._client.write_gatt_char(self.WRITE_CHARACTERISTIC, command)
             logger.debug(f"Sent command: {command.hex()}")
+            
+            # On Windows, add small delay after longer commands for processing
+            if platform.system() == "Windows" and len(command) > 4:
+                await asyncio.sleep(0.05)
+            
             return True
         except Exception as e:
             logger.error(f"Failed to write command {command.hex()}: {e}")
