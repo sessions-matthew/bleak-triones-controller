@@ -131,12 +131,31 @@ class TrionesController:
         try:
             self._client = BleakClient(self.device.address)
             await self._client.connect()
+            
+            # Access services property to ensure GATT services are available
+            services = self._client.services
+            if services:
+                service_list = list(services)
+                logger.debug(f"Discovered {len(service_list)} services for {self.name}")
+                
+                # Verify our required service exists
+                if not any(str(service.uuid).lower() == self.SERVICE_UUID.lower() for service in services):
+                    logger.warning(f"Required service {self.SERVICE_UUID} not found")
+            else:
+                logger.warning(f"No services discovered for {self.name}")
+            
             self._connected = True
             logger.info(f"Connected to {self.name} ({self.address})")
             return True
         except Exception as e:
             logger.error(f"Failed to connect to {self.name}: {e}")
             self._connected = False
+            if self._client:
+                try:
+                    await self._client.disconnect()
+                except:
+                    pass
+                self._client = None
             return False
     
     async def disconnect(self):
@@ -171,11 +190,24 @@ class TrionesController:
             return False
             
         try:
+            # Ensure we have the client and it's connected
+            if not self._client or not self._client.is_connected:
+                logger.error("Client not connected when trying to write command")
+                return False
+                
+            # Verify the characteristic exists before writing
+            services = self._client.services
+            if not services:
+                logger.error("No services available, service discovery may have failed")
+                return False
+                
             await self._client.write_gatt_char(self.WRITE_CHARACTERISTIC, command)
             logger.debug(f"Sent command: {command.hex()}")
             return True
         except Exception as e:
             logger.error(f"Failed to write command {command.hex()}: {e}")
+            # If write fails, mark as disconnected to force reconnection
+            self._connected = False
             return False
     
     async def _get_status_response(self) -> Optional[bytes]:
