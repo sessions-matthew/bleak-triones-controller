@@ -9,6 +9,7 @@ License: MIT
 """
 
 import asyncio
+import math
 import platform
 from typing import List, Tuple, Optional, Dict, Any
 from bleak import BleakScanner, BleakClient
@@ -446,6 +447,136 @@ class TrionesController:
             return await self.set_rgb(red, green, blue)
         except ValueError as e:
             raise ValueError(f"Invalid hex color: {hex_color}") from e
+
+    async def set_rgbw(self, red: int, green: int, blue: int, white: int) -> bool:
+        """
+        Set RGBW color (combines RGB and white channels)
+        
+        Args:
+            red: Red component (0-255)
+            green: Green component (0-255)
+            blue: Blue component (0-255)
+            white: White component (0-255)
+            
+        Returns:
+            bool: True if command sent successfully
+        """
+        # Validate input
+        for val in [red, green, blue, white]:
+            if not 0 <= val <= 255:
+                raise ValueError(f"RGBW values must be 0-255, got: {red}, {green}, {blue}, {white}")
+        
+        # Official Triones RGBW command format
+        command = bytes([0x56, red, green, blue, white, 0xF0, 0xAA])
+        return await self._write_command(command)
+
+    def _kelvin_to_rgb(self, temperature: int) -> Tuple[int, int, int]:
+        """
+        Convert color temperature in Kelvin to RGB values
+        Based on Tanner Helland's algorithm: https://tannerhelland.com/2012/09/18/convert-temperature-rgb-algorithm.html
+        
+        Args:
+            temperature: Color temperature in Kelvin (1000-40000)
+            
+        Returns:
+            Tuple[int, int, int]: RGB values (0-255)
+        """
+        # Clamp temperature to valid range
+        temperature = max(1000, min(40000, temperature))
+        
+        # Convert to temperature / 100 for calculations
+        temp = temperature / 100.0
+        
+        # Calculate red
+        if temp <= 66:
+            red = 255
+        else:
+            red = temp - 60
+            red = 329.698727446 * (red ** -0.1332047592)
+            red = max(0, min(255, red))
+        
+        # Calculate green
+        if temp <= 66:
+            green = temp
+            green = 99.4708025861 * math.log(green) - 161.1195681661
+        else:
+            green = temp - 60
+            green = 288.1221695283 * (green ** -0.0755148492)
+        green = max(0, min(255, green))
+        
+        # Calculate blue
+        if temp >= 66:
+            blue = 255
+        elif temp <= 19:
+            blue = 0
+        else:
+            blue = temp - 10
+            blue = 138.5177312231 * math.log(blue) - 305.0447927307
+            blue = max(0, min(255, blue))
+        
+        return (int(red), int(green), int(blue))
+
+    async def set_temperature(self, temperature: int, brightness: float = 1.0) -> bool:
+        """
+        Set color temperature using both RGB and white LEDs for accurate color reproduction
+        
+        Args:
+            temperature: Color temperature in Kelvin (1000-40000)
+                        Common values:
+                        - 1000K: Deep warm amber
+                        - 2000K: Candlelight
+                        - 2700K: Warm white (incandescent)
+                        - 3000K: Warm white (halogen)
+                        - 4000K: Cool white
+                        - 5000K: Daylight
+                        - 6500K: Cool daylight
+                        - 10000K: Blue sky
+            brightness: Overall brightness multiplier (0.0-1.0)
+            
+        Returns:
+            bool: True if command sent successfully
+        """
+        if not 1000 <= temperature <= 40000:
+            raise ValueError(f"Temperature must be 1000-40000K, got: {temperature}")
+        
+        if not 0.0 <= brightness <= 1.0:
+            raise ValueError(f"Brightness must be 0.0-1.0, got: {brightness}")
+        
+        # Get RGB values for the temperature
+        rgb_r, rgb_g, rgb_b = self._kelvin_to_rgb(temperature)
+        
+        # Calculate white component based on temperature and brightness
+        # For warmer temperatures (< 3000K), use less white to avoid washing out the warm tones
+        # For cooler temperatures (> 5000K), use more white to enhance the cool effect
+        if temperature < 3000:
+            # Warm temperatures: minimal white, rely more on RGB amber/red tones
+            white_factor = 0.1 + (temperature - 1000) / 20000  # 0.1 to 0.2
+        elif temperature < 5000:
+            # Neutral temperatures: moderate white
+            white_factor = 0.2 + (temperature - 3000) / 10000  # 0.2 to 0.4
+        else:
+            # Cool temperatures: more white for crisp daylight effect
+            white_factor = 0.4 + min((temperature - 5000) / 35000, 0.3)  # 0.4 to 0.7
+        
+        # Apply brightness scaling
+        white_intensity = int(255 * white_factor * brightness)
+        
+        # Scale RGB values by brightness, but reduce them slightly when white is present
+        # to prevent oversaturation
+        rgb_scale = brightness * (1.0 - white_factor * 0.3)  # Reduce RGB when white is high
+        
+        final_r = int(rgb_r * rgb_scale)
+        final_g = int(rgb_g * rgb_scale)
+        final_b = int(rgb_b * rgb_scale)
+        final_w = white_intensity
+        
+        # Ensure values are within valid range
+        final_r = max(0, min(255, final_r))
+        final_g = max(0, min(255, final_g))
+        final_b = max(0, min(255, final_b))
+        final_w = max(0, min(255, final_w))
+        
+        return await self.set_rgbw(final_r, final_g, final_b, final_w)
     
     def __str__(self) -> str:
         return f"TrionesController({self.name}, {self.address})"

@@ -6,6 +6,7 @@ A Python module for controlling Triones RGBW Bluetooth LED controllers using the
 
 - ✅ **Full RGB Control** - Set any RGB color (0-255 per channel)
 - ✅ **White Channel Support** - Control dedicated white LEDs
+- ✅ **Color Temperature** - Set accurate color temperatures using RGBW combination
 - ✅ **Power Management** - Turn controllers on/off
 - ✅ **Built-in Modes** - Access all 20 built-in lighting effects
 - ✅ **Multiple Controllers** - Control multiple controllers simultaneously
@@ -33,6 +34,9 @@ pip install -e .
 
 # Run the demo
 triones-demo
+
+# Run the color temperature demo
+python examples/temperature_demo.py
 ```
 
 ### Option 2: Install Dependencies Only
@@ -117,9 +121,33 @@ async def set_colors():
         # Set white mode
         await controller.set_white(255)         # Full white
         
+        # Set RGBW combination
+        await controller.set_rgbw(255, 100, 0, 50)  # Orange with white
+        
         await controller.disconnect()
 
 asyncio.run(set_colors())
+```
+
+### Color Temperature Control
+
+```python
+import asyncio
+from triones import connect_by_name
+
+async def temperature_control():
+    controller = await connect_by_name("Triones:1205110001A0")
+    
+    if controller:
+        # Set various color temperatures
+        await controller.set_temperature(2700, brightness=0.8)  # Warm white
+        await controller.set_temperature(4000, brightness=1.0)  # Cool white
+        await controller.set_temperature(6500, brightness=0.6)  # Daylight
+        await controller.set_temperature(1000, brightness=0.5)  # Candlelight
+        
+        await controller.disconnect()
+
+asyncio.run(temperature_control())
 ```
 
 ### Built-in Lighting Effects
@@ -208,6 +236,8 @@ Main controller class for individual devices.
 - `power_off()` - Turn controller off
 - `set_rgb(r, g, b)` - Set RGB color (0-255 each)
 - `set_white(intensity)` - Set white mode (0-255)
+- `set_rgbw(r, g, b, w)` - Set RGBW color with all channels (0-255 each)
+- `set_temperature(kelvin, brightness)` - Set color temperature (1000-40000K)
 - `set_color_hex(hex_string)` - Set color using hex string
 - `set_built_in_mode(mode, speed)` - Activate built-in lighting effect
 
@@ -258,9 +288,28 @@ This module implements the official Triones protocol specification:
 
 - **RGB Color**: `[0x56, R, G, B, 0x00, 0xF0, 0xAA]`
 - **White Mode**: `[0x56, 0x00, 0x00, 0x00, W, 0x0F, 0xAA]`
+- **RGBW Color**: `[0x56, R, G, B, W, 0xF0, 0xAA]`
 - **Power On/Off**: `[0xCC, 0x23/0x24, 0x33]`
 - **Built-in Mode**: `[0xBB, MODE, SPEED, 0x44]`
 - **Status Request**: `[0xEF, 0x01, 0x77]`
+
+### Color Temperature Algorithm
+
+The `set_temperature()` method uses a scientifically-based algorithm to convert color temperature (Kelvin) to RGB values, then combines RGB and white LEDs for accurate color reproduction:
+
+- **1000-3000K**: Warm tones with minimal white to preserve amber/red warmth
+- **3000-5000K**: Balanced RGB with moderate white for natural lighting
+- **5000-40000K**: Cool tones with enhanced white for crisp daylight effect
+
+Common temperatures:
+- **1000K**: Deep warm amber
+- **2000K**: Candlelight
+- **2700K**: Warm white (incandescent bulb)
+- **3000K**: Warm white (halogen bulb)
+- **4000K**: Cool white (office lighting)
+- **5000K**: Daylight
+- **6500K**: Cool daylight (computer monitor standard)
+- **10000K**: Blue sky
 
 ## Troubleshooting
 
