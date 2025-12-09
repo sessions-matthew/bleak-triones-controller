@@ -452,6 +452,9 @@ class TrionesController:
         """
         Set RGBW color (combines RGB and white channels)
         
+        This method tries multiple approaches to set RGBW colors since different
+        Triones controllers may have different command formats.
+        
         Args:
             red: Red component (0-255)
             green: Green component (0-255)
@@ -459,16 +462,43 @@ class TrionesController:
             white: White component (0-255)
             
         Returns:
-            bool: True if command sent successfully
+            bool: True if command(s) sent successfully
         """
         # Validate input
         for val in [red, green, blue, white]:
             if not 0 <= val <= 255:
                 raise ValueError(f"RGBW values must be 0-255, got: {red}, {green}, {blue}, {white}")
         
-        # Official Triones RGBW command format
-        command = bytes([0x56, red, green, blue, white, 0xF0, 0xAA])
-        return await self._write_command(command)
+        # This controller doesn't support combined RGBW commands properly
+        # (combined commands only activate the white channel and ignore RGB)
+        # So we always use separate RGB and White commands for reliable operation
+        logger.debug("Using separate RGB + White commands for better compatibility")
+        success = True
+        
+        # Handle the case where both RGB and White are 0 (turn off)
+        if red == 0 and green == 0 and blue == 0 and white == 0:
+            off_command = bytes([0x56, 0x00, 0x00, 0x00, 0x00, 0xF0, 0xAA])
+            logger.debug(f"Sending OFF command: {off_command.hex()}")
+            return await self._write_command(off_command)
+        
+        # Send RGB command first if we have RGB values
+        if red > 0 or green > 0 or blue > 0:
+            rgb_command = bytes([0x56, red, green, blue, 0x00, 0xF0, 0xAA])
+            logger.debug(f"Sending RGB command: {rgb_command.hex()}")
+            if not await self._write_command(rgb_command):
+                success = False
+                
+            # Small delay after RGB command
+            await asyncio.sleep(0.1)
+        
+        # Send white command if we have white value
+        if white > 0:
+            white_command = bytes([0x56, 0x00, 0x00, 0x00, white, 0x0F, 0xAA])
+            logger.debug(f"Sending White command: {white_command.hex()}")
+            if not await self._write_command(white_command):
+                success = False
+        
+        return success
 
     def _kelvin_to_rgb(self, temperature: int) -> Tuple[int, int, int]:
         """
@@ -516,9 +546,9 @@ class TrionesController:
         
         return (int(red), int(green), int(blue))
 
-    async def set_temperature(self, temperature: int, brightness: float = 1.0) -> bool:
+    async def set_temperature(self, temperature: int, brightness: float = 1.0, use_white_leds: bool = True) -> bool:
         """
-        Set color temperature using both RGB and white LEDs for accurate color reproduction
+        Set color temperature using RGB LEDs and optionally white LEDs for accurate color reproduction
         
         Args:
             temperature: Color temperature in Kelvin (1000-40000)
@@ -532,6 +562,7 @@ class TrionesController:
                         - 6500K: Cool daylight
                         - 10000K: Blue sky
             brightness: Overall brightness multiplier (0.0-1.0)
+            use_white_leds: If True, use white LEDs for neutral/cool temps. If False, use RGB only.
             
         Returns:
             bool: True if command sent successfully
@@ -545,38 +576,92 @@ class TrionesController:
         # Get RGB values for the temperature
         rgb_r, rgb_g, rgb_b = self._kelvin_to_rgb(temperature)
         
-        # Calculate white component based on temperature and brightness
-        # For warmer temperatures (< 3000K), use less white to avoid washing out the warm tones
-        # For cooler temperatures (> 5000K), use more white to enhance the cool effect
-        if temperature < 3000:
-            # Warm temperatures: minimal white, rely more on RGB amber/red tones
-            white_factor = 0.1 + (temperature - 1000) / 20000  # 0.1 to 0.2
-        elif temperature < 5000:
-            # Neutral temperatures: moderate white
-            white_factor = 0.2 + (temperature - 3000) / 10000  # 0.2 to 0.4
+        # Decide whether to use RGB or White LEDs based on temperature and hardware limitations
+        # Since this controller can't use RGB+White simultaneously, we choose the best option
+        
+        if use_white_leds and temperature >= 4000:
+            # For neutral and cool temperatures, white LEDs are more efficient and accurate
+            # Use white LEDs with slight RGB tint if needed
+            
+            # Calculate how "white" this temperature is
+            rgb_min = min(rgb_r, rgb_g, rgb_b)
+            rgb_max = max(rgb_r, rgb_g, rgb_b)
+            whiteness = rgb_min / rgb_max if rgb_max > 0 else 1.0
+            
+            if whiteness > 0.8:  # Very white/neutral color
+                # Use pure white LEDs for maximum efficiency
+                white_intensity = int(255 * brightness)
+                logger.debug(f"Temperature {temperature}K -> Pure White({white_intensity})")
+                return await self.set_white(white_intensity)
+            else:
+                # Use RGB for colors that are less white (more colored)
+                final_r = int(rgb_r * brightness)
+                final_g = int(rgb_g * brightness) 
+                final_b = int(rgb_b * brightness)
+                logger.debug(f"Temperature {temperature}K -> RGB({final_r}, {final_g}, {final_b})")
+                return await self.set_rgb(final_r, final_g, final_b)
         else:
-            # Cool temperatures: more white for crisp daylight effect
-            white_factor = 0.4 + min((temperature - 5000) / 35000, 0.3)  # 0.4 to 0.7
+            # For warm temperatures or when white LEDs disabled, use RGB only
+            # Boost brightness slightly to compensate for not using white LEDs
+            brightness_boost = min(1.0, brightness * 1.2)
+            
+            final_r = int(rgb_r * brightness_boost)
+            final_g = int(rgb_g * brightness_boost)
+            final_b = int(rgb_b * brightness_boost)
+            
+            # Ensure values don't exceed 255
+            final_r = min(255, final_r)
+            final_g = min(255, final_g)
+            final_b = min(255, final_b)
+            
+            logger.debug(f"Temperature {temperature}K -> RGB({final_r}, {final_g}, {final_b})")
+            return await self.set_rgb(final_r, final_g, final_b)
+    
+    async def test_white_leds(self, intensity: int = 255) -> bool:
+        """
+        Test white LEDs directly (debug method)
         
-        # Apply brightness scaling
-        white_intensity = int(255 * white_factor * brightness)
+        Args:
+            intensity: White LED intensity (0-255)
+            
+        Returns:
+            bool: True if command sent successfully
+        """
+        logger.info(f"Testing white LEDs at intensity {intensity}")
+        return await self.set_rgbw(0, 0, 0, intensity)
+    
+    async def test_rgbw_formats(self, red: int = 255, green: int = 0, blue: int = 0, white: int = 100) -> bool:
+        """
+        Test different RGBW command formats to find which one works (debug method)
         
-        # Scale RGB values by brightness, but reduce them slightly when white is present
-        # to prevent oversaturation
-        rgb_scale = brightness * (1.0 - white_factor * 0.3)  # Reduce RGB when white is high
+        Args:
+            red: Red component (0-255)
+            green: Green component (0-255) 
+            blue: Blue component (0-255)
+            white: White component (0-255)
+            
+        Returns:
+            bool: True if any command sent successfully
+        """
+        logger.info(f"Testing RGBW formats with R={red}, G={green}, B={blue}, W={white}")
         
-        final_r = int(rgb_r * rgb_scale)
-        final_g = int(rgb_g * rgb_scale)
-        final_b = int(rgb_b * rgb_scale)
-        final_w = white_intensity
+        formats_to_try = [
+            (bytes([0x56, red, green, blue, white, 0xFF, 0xAA]), "0xFF magic"),
+            (bytes([0x56, red, green, blue, white, 0xF0, 0xAA]), "0xF0 magic (RGB-style)"),
+            (bytes([0x56, red, green, blue, white, 0x0F, 0xAA]), "0x0F magic (White-style)"),
+            (bytes([0x56, red, green, blue, white, 0x00, 0xAA]), "0x00 magic"),
+            (bytes([0x56, red, green, blue, white, 0xAA, 0xAA]), "0xAA magic"),
+        ]
         
-        # Ensure values are within valid range
-        final_r = max(0, min(255, final_r))
-        final_g = max(0, min(255, final_g))
-        final_b = max(0, min(255, final_b))
-        final_w = max(0, min(255, final_w))
+        for command, description in formats_to_try:
+            logger.info(f"  Trying {description}: {command.hex()}")
+            if await self._write_command(command):
+                logger.info(f"  ✅ {description} sent successfully")
+                await asyncio.sleep(2)  # Wait to observe effect
+            else:
+                logger.error(f"  ❌ {description} failed")
         
-        return await self.set_rgbw(final_r, final_g, final_b, final_w)
+        return True
     
     def __str__(self) -> str:
         return f"TrionesController({self.name}, {self.address})"

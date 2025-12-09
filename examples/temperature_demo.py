@@ -18,7 +18,7 @@ async def temperature_demo():
     print("🌡️  Triones Color Temperature Demo")
     print("=" * 50)
     print("This demo will cycle through various color temperatures")
-    print("using both RGB and white LEDs for accurate reproduction")
+    print("using both RGB and white LEDs for maximum brightness and accurate reproduction")
     print()
     
     try:

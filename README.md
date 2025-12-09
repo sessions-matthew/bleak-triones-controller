@@ -237,7 +237,7 @@ Main controller class for individual devices.
 - `set_rgb(r, g, b)` - Set RGB color (0-255 each)
 - `set_white(intensity)` - Set white mode (0-255)
 - `set_rgbw(r, g, b, w)` - Set RGBW color with all channels (0-255 each)
-- `set_temperature(kelvin, brightness)` - Set color temperature (1000-40000K)
+- `set_temperature(kelvin, brightness, use_white_leds)` - Set color temperature (1000-40000K)
 - `set_color_hex(hex_string)` - Set color using hex string
 - `set_built_in_mode(mode, speed)` - Activate built-in lighting effect
 
@@ -295,11 +295,15 @@ This module implements the official Triones protocol specification:
 
 ### Color Temperature Algorithm
 
-The `set_temperature()` method uses a scientifically-based algorithm to convert color temperature (Kelvin) to RGB values, then combines RGB and white LEDs for accurate color reproduction:
+The `set_temperature()` method uses a scientifically-based algorithm to convert color temperature (Kelvin) to the optimal LED combination:
 
-- **1000-3000K**: Warm tones with minimal white to preserve amber/red warmth
-- **3000-5000K**: Balanced RGB with moderate white for natural lighting
-- **5000-40000K**: Cool tones with enhanced white for crisp daylight effect
+1. **RGB Conversion**: Temperature is converted to RGB using Tanner Helland's algorithm
+2. **Hardware-Aware Selection**: Due to Triones controller limitations, the method intelligently chooses between RGB and White LEDs:
+   - **<4000K**: Uses RGB LEDs for accurate warm color reproduction
+   - **≥4000K + high whiteness**: Uses white LEDs for maximum efficiency and brightness
+   - **≥4000K + colored**: Uses RGB LEDs for color accuracy
+
+**Note**: Many Triones controllers cannot use RGB and White LEDs simultaneously. The algorithm automatically selects the best LED type for each temperature to work within hardware limitations while maximizing both color accuracy and brightness.
 
 Common temperatures:
 - **1000K**: Deep warm amber
